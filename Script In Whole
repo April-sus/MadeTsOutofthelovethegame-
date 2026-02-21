@@ -1,0 +1,284 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local TeleportService = game:GetService("TeleportService")
+local Teams = game:GetService("Teams")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
+local player = Players.LocalPlayer
+
+-- ==========================================
+-- ⚙️ CONFIGURATION (EASY TWEAKING)
+-- ==========================================
+local Config = {
+	-- 🏃‍♂️ Movement Settings
+	WalkSpeed = 170,                 -- Speed of TweenService movement
+
+	-- ⏱️ Stage Timings (task.wait durations in seconds)
+	WaitBeforeStart = 0,          -- Initial wait before the autofarm loop starts
+	WaitAfterAppleMove = 0.5,       -- Wait after arriving at the Apple spawn
+	WaitAfterAppleGrab = 0.5,       -- Buffer time to ensure Apple enters inventory
+	WaitAfterBoardMove = 0.5,       -- Wait after arriving at the Cutting Board
+	WaitAfterEquip = 0.5,           -- Wait after equipping the Apple tool
+	
+	-- 🍎 Prompt Hold Timings (How long the script waits after triggering the prompt)
+	ApplePromptHoldTime = 0,      -- Stage time/hold time for the Apple
+	BoardPromptHoldTime = 0.5,      -- Stage time/hold time for the Cutting Board
+	
+	-- 🎮 Minigame & Rejoin Timings
+	WaitAfterGUIOpens = 0.5,        -- Wait time after Minigame GUI opens before firing finish
+	WaitBeforeRejoin = 0.5,         -- Wait time before teleporting/rejoining the server
+	
+	-- ⚡ Infinite Yield Proximity Prompt System
+	EnableInstantPrompts = true     -- Makes proximity prompts instant (like the IY command)
+}
+
+-- ==========================================
+-- ⚡ INSTANT PROXIMITY PROMPT SYSTEM (FROM IY)
+-- ==========================================
+if Config.EnableInstantPrompts then
+	ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt)
+		prompt.HoldDuration = 0
+	end)
+end
+
+-- ==========================================
+-- 🚀 START MENU BYPASS & TEAM SWITCH
+-- ==========================================
+local function joinPatientTeam()
+	local TeamChange = ReplicatedStorage:WaitForChild("Remote", 9e9):WaitForChild("TeamChange", 9e9)
+	local AnalyticsEvent = ReplicatedStorage:WaitForChild("Remote", 9e9):WaitForChild("AnalyticsEvent", 9e9)
+	local patientTeam = Teams:WaitForChild("Patient", 5) or Teams:WaitForChild("PATIENT", 5)
+	local desiredSubteam = "Patient"
+
+	if patientTeam then
+		print("[Auto] Bypassing Start Menu and joining Patient Team...")
+		task.spawn(function()
+			pcall(function()
+				AnalyticsEvent:FireServer("Funnel", "Title Screen", "Selected Team")
+			end)
+			task.wait(0.5)
+			
+			local success = TeamChange:InvokeServer(patientTeam, desiredSubteam)
+			if success then
+				print("[Auto] Successfully joined the Patient team!")
+				if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+					player.CharacterAdded:Wait()
+					task.wait(1)
+				end
+			else
+				warn("[Auto] Server rejected team change.")
+			end
+		end)
+	else
+		warn("[Auto] Could not find 'Patient' team in game.Teams!")
+	end
+end
+
+joinPatientTeam()
+
+if not game:IsLoaded() then
+	game.Loaded:Wait()
+end
+
+local remote = ReplicatedStorage:WaitForChild("Remote", 9e9):WaitForChild("FruitMinigameEvent", 9e9)
+local playerGui = player:WaitForChild("PlayerGui")
+local appleToolName = "Apple"
+
+local baseAppleTP = Vector3.new(63.64, 254.5, -665.42)
+local baseCuttingBoardTP = Vector3.new(67.34, 254.5, -666.73)
+
+-- ==========================================
+-- Utility Functions
+-- ==========================================
+
+local function hasApple()
+	local backpack = player:FindFirstChild("Backpack")
+	local character = player.Character
+	
+	local inBackpack = backpack and backpack:FindFirstChild(appleToolName)
+	local equipped = character and character:FindFirstChild(appleToolName)
+	
+	return inBackpack or equipped
+end
+
+local function safeMoveTo(targetPos)
+	local char = player.Character or player.CharacterAdded:Wait()
+	local hrp = char:WaitForChild("HumanoidRootPart", 5)
+	if not hrp then return end
+
+	local offsetX = math.random(-15, 15) / 10 
+	local offsetZ = math.random(-15, 15) / 10
+	local randomizedPos = targetPos + Vector3.new(offsetX, 0, offsetZ)
+
+	local distance = (hrp.Position - randomizedPos).Magnitude
+	
+	if distance > 3 then
+		local timeToTake = distance / Config.WalkSpeed
+		local tweenInfo = TweenInfo.new(timeToTake, Enum.EasingStyle.Linear)
+		local tween = TweenService:Create(hrp, tweenInfo, {CFrame = CFrame.new(randomizedPos)})
+		
+		tween:Play()
+		tween.Completed:Wait() 
+	else
+		hrp.CFrame = CFrame.new(randomizedPos)
+	end
+end
+
+local function fireClosestPrompt(targetPos, isCuttingBoard)
+	local closestPrompt = nil
+	local shortestDistance = 15
+
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		-- Added obj.Enabled check to prevent firing a disabled prompt and getting stuck
+		if obj:IsA("ProximityPrompt") and obj.Enabled then
+			if isCuttingBoard then
+				local attachment = obj.Parent
+				if attachment and attachment.Name == "PromptAttachment" and attachment.Parent and attachment.Parent.Name == "CuttingBoard" then
+					local dist = (attachment.Parent.Position - targetPos).Magnitude
+					if dist < shortestDistance then
+						shortestDistance = dist
+						closestPrompt = obj
+					end
+				end
+			else
+				local part = obj.Parent
+				if part and part:IsA("BasePart") then
+					local dist = (part.Position - targetPos).Magnitude
+					if dist < shortestDistance then
+						shortestDistance = dist
+						closestPrompt = obj
+					end
+				end
+			end
+		end
+	end
+
+	if closestPrompt then
+		-- Stage hold times sourced from config
+		local holdTime = isCuttingBoard and Config.BoardPromptHoldTime or Config.ApplePromptHoldTime
+		
+		if isCuttingBoard then
+			print("[Auto] Found Cutting Board Prompt. Interacting...")
+		else
+			print("[Auto] Found Apple Prompt. Grabbing...")
+		end
+		
+		-- ⚡ FULL IY PROMPT BYPASS: Ensure prompt fires regardless of LineOfSight or Distance
+		local originalLineOfSight = closestPrompt.RequiresLineOfSight
+		local originalMaxDistance = closestPrompt.MaxActivationDistance
+		local originalHoldDuration = closestPrompt.HoldDuration
+		
+		closestPrompt.RequiresLineOfSight = false
+		closestPrompt.MaxActivationDistance = math.huge
+		if Config.EnableInstantPrompts then
+			closestPrompt.HoldDuration = 0
+		end
+		
+		if fireproximityprompt then
+			fireproximityprompt(closestPrompt, 0)
+			-- Maintain the stage speed wait even if fired instantly
+			task.wait(holdTime)
+		else
+			closestPrompt:InputHoldBegin()
+			task.wait(Config.EnableInstantPrompts and 0.05 or holdTime)
+			closestPrompt:InputHoldEnd()
+			
+			-- Maintain the stage speed wait even if hold was bypassed
+			if Config.EnableInstantPrompts then
+				task.wait(holdTime)
+			end
+		end
+		
+		-- Restore original properties to keep it stealthy
+		closestPrompt.RequiresLineOfSight = originalLineOfSight
+		closestPrompt.MaxActivationDistance = originalMaxDistance
+		closestPrompt.HoldDuration = originalHoldDuration
+		
+		return true
+	end
+	
+	warn("[Auto] No ProximityPrompt found near the target location!")
+	return false
+end
+
+-- ==========================================
+-- Main Automated Logic 
+-- ==========================================
+
+task.wait(Config.WaitBeforeStart) 
+
+while true do
+	task.wait(0.5) 
+
+	local char = player.Character
+	local hum = char and char:FindFirstChild("Humanoid")
+	
+	if not hum or hum.Health <= 0 then 
+		continue 
+	end
+
+	-- STEP 1: Get the Apple 
+	if not hasApple() then
+		print("[Auto] Moving to Apple...")
+		safeMoveTo(baseAppleTP)
+		task.wait(Config.WaitAfterAppleMove) 
+		
+		fireClosestPrompt(baseAppleTP, false)
+		
+		task.wait(Config.WaitAfterAppleGrab)
+		continue 
+	end
+
+	-- STEP 2: Go to the Cutting Board 
+	if hasApple() and hum.Health > 0 then
+		print("[Auto] Moving to Cutting Board...")
+		safeMoveTo(baseCuttingBoardTP)
+		task.wait(Config.WaitAfterBoardMove)
+
+		local backpack = player:FindFirstChild("Backpack")
+		local appleTool = backpack and backpack:FindFirstChild(appleToolName)
+		if appleTool and hum then
+			hum:EquipTool(appleTool)
+			task.wait(Config.WaitAfterEquip)
+		end
+
+		local fired = fireClosestPrompt(baseCuttingBoardTP, true)
+		if not fired then 
+			-- Abort and retry if the prompt failed to fire (prevents getting stuck)
+			continue 
+		end
+
+		-- STEP 3: Wait for GUI and complete minigame 
+		local gui = playerGui:WaitForChild("FruitMinigameGui", 5)
+		
+		if gui then
+			local timeout = 0
+			repeat 
+				task.wait(0.1) 
+				timeout = timeout + 0.1
+			until gui.Enabled or timeout > 5
+			
+			-- Prevent permanent hang if the GUI doesn't open
+			if not gui.Enabled then
+				warn("[Auto] Minigame GUI failed to open! Retrying...")
+				continue
+			end
+			
+			print("[Auto] Minigame started. Waiting configured time...")
+			task.wait(Config.WaitAfterGUIOpens)
+
+			remote:FireServer("Finish")
+			print("[Auto] Remote fired. Minigame completed!")
+
+			-- STEP 4: Server Rejoin Logic
+			print("[Auto] Waiting before rejoining...")
+			task.wait(Config.WaitBeforeRejoin)
+
+			print("[Auto] Rejoining the exact same server now...")
+			TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+			
+			task.wait(9e9) 
+		end
+	end
+end
