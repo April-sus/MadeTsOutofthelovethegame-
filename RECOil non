@@ -1,0 +1,196 @@
+-- EXPLOIT DEMO: No-Recoil Toggle
+-- Paste into: Studio Command Bar (Client) OR F9 Developer Console > Client tab
+--
+-- ══════════════════════════════════════════════════════════════════
+--  HOW THIS WORKS
+-- ══════════════════════════════════════════════════════════════════
+--  Recoil in SPH is 100% client-side. CharacterClient.client.luau
+--  reads recoil values from the WeaponStats ModuleScript each shot:
+--
+--    recoilSpring:shove(Vector3.new(vertRecoil, horzRecoil, camShake))
+--    gunRecoilSpring:shove(Vector3.new(vertRecoil, horzRecoil, punch))
+--
+--  Roblox caches ModuleScript results — every script that calls
+--  require() on the same ModuleScript gets the EXACT SAME table.
+--  So if we require WeaponStats and zero out the recoil fields,
+--  CharacterClient immediately reads 0s on the next shot because
+--  it's pointing at the same table in memory.
+--
+--  NO remote events needed. NO server interaction at all.
+--  The server has zero visibility into recoil values.
+--
+--  WHAT TO PATCH:
+--   There is no server-side fix for this — recoil is cosmetic and
+--   always client-authoritative. The mitigation is statistical:
+--   flag players whose shot patterns show suspiciously low spread
+--   over many shots (requires server-side shot-position logging).
+-- ══════════════════════════════════════════════════════════════════
+
+local players = game:GetService("Players")
+local coreGui = game:GetService("CoreGui")
+local lp      = players.LocalPlayer
+local char    = lp.Character
+
+-- Need an SPH gun to get the WeaponStats module from
+local tool = char and char:FindFirstChildWhichIsA("Tool")
+if not tool or not tool:FindFirstChild("SPH_Weapon") then
+	print("[DEMO] Equip an SPH gun first so we can locate its WeaponStats.")
+	return
+end
+
+-- ── Require WeaponStats (same cached table CharacterClient uses) ──
+local wepStats = require(tool.SPH_Weapon.WeaponStats)
+
+-- ── Save originals so we can restore them ─────────────────────────
+local origCam = {
+	vertical   = wepStats.recoil.vertical,
+	horizontal = wepStats.recoil.horizontal,
+	camShake   = wepStats.recoil.camShake,
+	damping    = wepStats.recoil.damping,
+	speed      = wepStats.recoil.speed,
+}
+local origGun = {
+	vertical        = wepStats.gunRecoil.vertical,
+	horizontal      = wepStats.gunRecoil.horizontal,
+	punchMultiplier = wepStats.gunRecoil.punchMultiplier,
+}
+
+local noRecoilActive = false
+
+local function applyNoRecoil()
+	-- Zero every value that CharacterClient reads when calling shove()
+	wepStats.recoil.vertical   = 0
+	wepStats.recoil.horizontal = 0
+	wepStats.recoil.camShake   = 0
+	wepStats.recoil.damping    = 0
+	wepStats.recoil.speed      = 0
+
+	wepStats.gunRecoil.vertical        = 0
+	wepStats.gunRecoil.horizontal      = 0
+	wepStats.gunRecoil.punchMultiplier = 0
+
+	-- Also zero aimReduction multiplier — stops the aim-recoil path
+	-- from accidentally applying a divide-by-zero fallback
+	wepStats.recoil.aimReduction = 1
+
+	print("[DEMO] No-recoil ON — WeaponStats recoil values zeroed in cached table.")
+end
+
+local function restoreRecoil()
+	wepStats.recoil.vertical   = origCam.vertical
+	wepStats.recoil.horizontal = origCam.horizontal
+	wepStats.recoil.camShake   = origCam.camShake
+	wepStats.recoil.damping    = origCam.damping
+	wepStats.recoil.speed      = origCam.speed
+
+	wepStats.gunRecoil.vertical        = origGun.vertical
+	wepStats.gunRecoil.horizontal      = origGun.horizontal
+	wepStats.gunRecoil.punchMultiplier = origGun.punchMultiplier
+
+	print("[DEMO] No-recoil OFF — original recoil values restored.")
+end
+
+-- ══════════════════════════════════════════════════════════════════
+--  GUI
+-- ══════════════════════════════════════════════════════════════════
+local existing = coreGui:FindFirstChild("DEMO_NoRecoilGui")
+if existing then existing:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name         = "DEMO_NoRecoilGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent       = coreGui
+
+-- Small pill-shaped window
+local WIN_W, WIN_H = 220, 100
+
+local frame = Instance.new("Frame")
+frame.Size             = UDim2.new(0, WIN_W, 0, WIN_H)
+frame.Position         = UDim2.new(1, -(WIN_W + 12), 0, 120)
+frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+frame.BorderSizePixel  = 0
+frame.Active           = true
+frame.Draggable        = true
+frame.Parent           = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+-- Title bar
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 28)
+titleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+titleBar.BorderSizePixel  = 0
+titleBar.Parent           = frame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size                   = UDim2.new(1, -32, 1, 0)
+titleLabel.Position               = UDim2.new(0, 10, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text                   = "No-Recoil  [DEMO]"
+titleLabel.TextColor3             = Color3.fromRGB(210, 210, 210)
+titleLabel.TextSize               = 12
+titleLabel.Font                   = Enum.Font.GothamBold
+titleLabel.TextXAlignment         = Enum.TextXAlignment.Left
+titleLabel.Parent                 = titleBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size             = UDim2.new(0, 22, 0, 22)
+closeBtn.Position         = UDim2.new(1, -26, 0, 3)
+closeBtn.BackgroundColor3 = Color3.fromRGB(170, 40, 40)
+closeBtn.Text             = "✕"
+closeBtn.TextColor3       = Color3.new(1, 1, 1)
+closeBtn.TextSize         = 10
+closeBtn.Font             = Enum.Font.GothamBold
+closeBtn.BorderSizePixel  = 0
+closeBtn.Parent           = titleBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
+closeBtn.MouseButton1Click:Connect(function()
+	if noRecoilActive then restoreRecoil() end
+	screenGui:Destroy()
+end)
+
+-- Gun name label (so you can see which gun's stats are patched)
+local gunLabel = Instance.new("TextLabel")
+gunLabel.Size                   = UDim2.new(1, -16, 0, 18)
+gunLabel.Position               = UDim2.new(0, 8, 0, 32)
+gunLabel.BackgroundTransparency = 1
+gunLabel.Text                   = "Gun: " .. tool.Name
+gunLabel.TextColor3             = Color3.fromRGB(130, 130, 150)
+gunLabel.TextSize               = 10
+gunLabel.Font                   = Enum.Font.Gotham
+gunLabel.TextXAlignment         = Enum.TextXAlignment.Left
+gunLabel.Parent                 = frame
+
+-- Big toggle button
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size             = UDim2.new(1, -16, 0, 30)
+toggleBtn.Position         = UDim2.new(0, 8, 1, -38)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 55)
+toggleBtn.Text             = "OFF  —  Click to Enable"
+toggleBtn.TextColor3       = Color3.new(1, 1, 1)
+toggleBtn.TextSize         = 11
+toggleBtn.Font             = Enum.Font.GothamBold
+toggleBtn.BorderSizePixel  = 0
+toggleBtn.Parent           = frame
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 6)
+
+toggleBtn.MouseButton1Click:Connect(function()
+	noRecoilActive = not noRecoilActive
+	if noRecoilActive then
+		applyNoRecoil()
+		toggleBtn.Text             = "ON  —  No-Recoil Active"
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(160, 35, 35)
+	else
+		restoreRecoil()
+		toggleBtn.Text             = "OFF  —  Click to Enable"
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 55)
+	end
+end)
+
+-- Restore on destroy (safety net)
+screenGui.Destroying:Connect(function()
+	if noRecoilActive then pcall(restoreRecoil) end
+end)
+
+print("[DEMO] No-Recoil GUI ready. Press the toggle button.")
+print("[DEMO] Server cannot detect this — it requires statistical shot-spread logging to catch.")
