@@ -1,0 +1,486 @@
+-- EXPLOIT DEMO: GUI Kill Menu (ESP Player List)  v2
+-- Paste into: Studio Command Bar (Client) OR F9 Developer Console > Client tab
+--
+-- ══════════════════════════════════════════════════════════════════
+--  NEW IN V2
+-- ══════════════════════════════════════════════════════════════════
+--  - 3-bullet burst per kill (bypasses single-shot detection)
+--  - Scare Shot toggle: fires 1 bullet near target (no kill intent)
+--  - Mouse cursor stays visible while GUI is open
+--  - Search box to filter the player list by username
+--  - Player head thumbnail shown next to each username
+--
+--  WHY COREGUIGUI INJECTION MATTERS FOR YOUR ANTI-CHEAT:
+--   Server-side you cannot detect or remove a ScreenGui that lives
+--   in CoreGui. The kill itself is still blocked/detected by the
+--   same BulletHit server checks, so fixing those is the real fix.
+-- ══════════════════════════════════════════════════════════════════
+
+local players   = game:GetService("Players")
+local coreGui   = game:GetService("CoreGui")
+local uis       = game:GetService("UserInputService")
+
+local lp   = players.LocalPlayer
+local char = lp.Character
+
+-- ── Tool check ────────────────────────────────────────────────────
+local tool = char and char:FindFirstChildWhichIsA("Tool")
+if not tool or not tool:FindFirstChild("SPH_Weapon") then
+	print("[DEMO] Equip an SPH gun first — server still enforces requireEquippedGun.")
+	return
+end
+
+local bh = require(game.ReplicatedStorage.SPH_Assets.Modules.BridgeNet).CreateBridge("BulletHit")
+
+-- ── State ─────────────────────────────────────────────────────────
+local scareMode    = false   -- true = 1 bullet near target, false = 3-bullet burst
+local BURST_COUNT  = 3       -- bullets fired in normal kill mode
+local BURST_DELAY  = 0.06    -- seconds between burst shots (below most rate-limit windows)
+local POS_JITTER   = 0.4
+local SCARE_JITTER = 2.5     -- larger jitter so scare shot misses the head
+
+-- ── Mouse cursor: persistently unlocked while GUI is alive ─────────
+-- Equipping a gun resets MouseBehavior to LockCenter every time.
+-- This listener fires whenever anything changes it and immediately
+-- forces it back to Default, so re-equipping the gun has no effect.
+uis.MouseIconEnabled = true
+uis.MouseBehavior    = Enum.MouseBehavior.Default
+
+local mouseConn = uis:GetPropertyChangedSignal("MouseBehavior"):Connect(function()
+	if uis.MouseBehavior ~= Enum.MouseBehavior.Default then
+		uis.MouseBehavior = Enum.MouseBehavior.Default
+	end
+end)
+
+-- ── Jitter / fire helpers ─────────────────────────────────────────
+local function jitter(mag)
+	return Vector3.new(
+		(math.random() * 2 - 1) * mag,
+		(math.random() * 2 - 1) * mag,
+		(math.random() * 2 - 1) * mag
+	)
+end
+
+local function humanDelay()
+	return 0.3 + ((math.random() + math.random()) / 2) * 0.4
+end
+
+-- Fire BulletHit N times at a target (burst) or once near head (scare)
+local function killPlayer(target)
+	if not target or not target.Character then return end
+	local head     = target.Character:FindFirstChild("Head")
+	local humanoid = target.Character:FindFirstChild("Humanoid")
+	if not head or not humanoid or humanoid.Health <= 0 then
+		print("[DEMO] " .. target.Name .. " already dead or missing.") return
+	end
+
+	local currentTool = char:FindFirstChildWhichIsA("Tool")
+	if not currentTool or not currentTool:FindFirstChild("SPH_Weapon") then
+		print("[DEMO] No SPH gun equipped — server would reject.") return
+	end
+
+	if scareMode then
+		-- Scare shot: 1 bullet with big jitter so it misses but player sees the hit effect
+		local missPos  = head.Position + jitter(SCARE_JITTER)
+		local originCF = char.HumanoidRootPart.CFrame * CFrame.new(jitter(1.5))
+		bh:Fire(currentTool, { Position = missPos, Normal = Vector3.new(0,1,0), Instance = head }, originCF)
+		print("[DEMO] Scare shot fired near " .. target.Name)
+	else
+		-- 3-bullet burst: fire BURST_COUNT times with a small delay between each
+		-- Bypasses single-shot detection; each packet looks like a normal shot
+		for i = 1, BURST_COUNT do
+			if not target.Character then break end
+			local h2 = target.Character:FindFirstChild("Head")
+			if not h2 then break end
+			local hitPos   = h2.Position + jitter(POS_JITTER)
+			local originCF = char.HumanoidRootPart.CFrame * CFrame.new(jitter(1.5))
+			bh:Fire(currentTool, { Position = hitPos, Normal = Vector3.new(0,1,0), Instance = h2 }, originCF)
+			if i < BURST_COUNT then task.wait(BURST_DELAY) end
+		end
+		print(("[DEMO] %d-bullet burst fired at %s"):format(BURST_COUNT, target.Name))
+	end
+end
+
+-- ══════════════════════════════════════════════════════════════════
+--  GUI
+-- ══════════════════════════════════════════════════════════════════
+local existing = coreGui:FindFirstChild("DEMO_KillGui")
+if existing then existing:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name           = "DEMO_KillGui"
+screenGui.ResetOnSpawn   = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent         = coreGui
+
+-- Main window
+local WIN_W, WIN_H = 290, 430
+
+local frame = Instance.new("Frame")
+frame.Name             = "MainFrame"
+frame.Size             = UDim2.new(0, WIN_W, 0, WIN_H)
+frame.Position         = UDim2.new(0.5, -WIN_W/2, 0.5, -WIN_H/2)
+frame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+frame.BorderSizePixel  = 0
+frame.Active           = true
+frame.Draggable        = true
+frame.Parent           = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+
+-- ── Title bar ─────────────────────────────────────────────────────
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 30)
+titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+titleBar.BorderSizePixel  = 0
+titleBar.Parent           = frame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 6)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size                   = UDim2.new(1, -36, 1, 0)
+titleLabel.Position               = UDim2.new(0, 10, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text                   = "SPH Kill GUI  [DEMO v2]"
+titleLabel.TextColor3             = Color3.fromRGB(220, 220, 220)
+titleLabel.TextSize               = 13
+titleLabel.Font                   = Enum.Font.GothamBold
+titleLabel.TextXAlignment         = Enum.TextXAlignment.Left
+titleLabel.Parent                 = titleBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size             = UDim2.new(0, 24, 0, 24)
+closeBtn.Position         = UDim2.new(1, -28, 0, 3)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 45, 45)
+closeBtn.Text             = "✕"
+closeBtn.TextColor3       = Color3.new(1,1,1)
+closeBtn.TextSize         = 11
+closeBtn.Font             = Enum.Font.GothamBold
+closeBtn.BorderSizePixel  = 0
+closeBtn.Parent           = titleBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
+closeBtn.MouseButton1Click:Connect(function()
+	mouseConn:Disconnect()                          -- stop fighting the lock
+	uis.MouseBehavior = Enum.MouseBehavior.LockCenter -- restore normal gun behaviour
+	screenGui:Destroy()
+end)
+
+-- Also clean up if the GUI is destroyed any other way
+screenGui.Destroying:Connect(function()
+	pcall(function() mouseConn:Disconnect() end)
+	uis.MouseBehavior = Enum.MouseBehavior.LockCenter
+end)
+
+-- ── Row 1: Kill All + Scare toggle ───────────────────────────────
+local killAllBtn = Instance.new("TextButton")
+killAllBtn.Size             = UDim2.new(0.58, -10, 0, 26)
+killAllBtn.Position         = UDim2.new(0, 8, 0, 36)
+killAllBtn.BackgroundColor3 = Color3.fromRGB(160, 38, 38)
+killAllBtn.Text             = "Kill All  (burst)"
+killAllBtn.TextColor3       = Color3.new(1,1,1)
+killAllBtn.TextSize         = 11
+killAllBtn.Font             = Enum.Font.GothamBold
+killAllBtn.BorderSizePixel  = 0
+killAllBtn.Parent           = frame
+Instance.new("UICorner", killAllBtn).CornerRadius = UDim.new(0, 4)
+
+-- Scare Shot toggle button
+local scareBtn = Instance.new("TextButton")
+scareBtn.Size             = UDim2.new(0.42, -6, 0, 26)
+scareBtn.Position         = UDim2.new(0.58, 2, 0, 36)
+scareBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+scareBtn.Text             = "☐ Scare Shot"
+scareBtn.TextColor3       = Color3.fromRGB(180, 180, 200)
+scareBtn.TextSize         = 10
+scareBtn.Font             = Enum.Font.GothamBold
+scareBtn.BorderSizePixel  = 0
+scareBtn.Parent           = frame
+Instance.new("UICorner", scareBtn).CornerRadius = UDim.new(0, 4)
+
+scareBtn.MouseButton1Click:Connect(function()
+	scareMode = not scareMode
+	if scareMode then
+		scareBtn.Text             = "☑ Scare Shot"
+		scareBtn.BackgroundColor3 = Color3.fromRGB(60, 100, 60)
+		scareBtn.TextColor3       = Color3.fromRGB(130, 220, 130)
+		killAllBtn.Text           = "Scare All"
+	else
+		scareBtn.Text             = "☐ Scare Shot"
+		scareBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+		scareBtn.TextColor3       = Color3.fromRGB(180, 180, 200)
+		killAllBtn.Text           = "Kill All  (burst)"
+	end
+end)
+
+-- ── Row 2: Search box ─────────────────────────────────────────────
+local searchBox = Instance.new("TextBox")
+searchBox.Name                   = "SearchBox"
+searchBox.Size                   = UDim2.new(1, -16, 0, 24)
+searchBox.Position               = UDim2.new(0, 8, 0, 68)
+searchBox.BackgroundColor3       = Color3.fromRGB(30, 30, 40)
+searchBox.BorderSizePixel        = 0
+searchBox.TextColor3             = Color3.fromRGB(210, 210, 210)
+searchBox.PlaceholderText        = "🔍  Search player..."
+searchBox.PlaceholderColor3      = Color3.fromRGB(100, 100, 120)
+searchBox.Text                   = ""
+searchBox.TextSize               = 11
+searchBox.Font                   = Enum.Font.Gotham
+searchBox.ClearTextOnFocus       = false
+searchBox.Parent                 = frame
+Instance.new("UICorner", searchBox).CornerRadius = UDim.new(0, 4)
+
+local searchPad = Instance.new("UIPadding")
+searchPad.PaddingLeft = UDim.new(0, 8)
+searchPad.Parent      = searchBox
+
+-- ── Scrolling player list ─────────────────────────────────────────
+local scrollFrame = Instance.new("ScrollingFrame")
+scrollFrame.Name                 = "PlayerList"
+scrollFrame.Size                 = UDim2.new(1, -16, 1, -102)
+scrollFrame.Position             = UDim2.new(0, 8, 0, 98)
+scrollFrame.BackgroundColor3     = Color3.fromRGB(14, 14, 18)
+scrollFrame.BorderSizePixel      = 0
+scrollFrame.ScrollBarThickness   = 4
+scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
+scrollFrame.CanvasSize           = UDim2.new(0, 0, 0, 0)
+scrollFrame.AutomaticCanvasSize  = Enum.AutomaticSize.Y
+scrollFrame.Parent               = frame
+Instance.new("UICorner", scrollFrame).CornerRadius = UDim.new(0, 4)
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding   = UDim.new(0, 2)
+listLayout.Parent    = scrollFrame
+
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop   = UDim.new(0, 4)
+listPadding.PaddingLeft  = UDim.new(0, 4)
+listPadding.PaddingRight = UDim.new(0, 4)
+listPadding.Parent       = scrollFrame
+
+-- ══════════════════════════════════════════════════════════════════
+--  PLAYER LIST BUILDER
+-- ══════════════════════════════════════════════════════════════════
+local function getTeamLabel(player)
+	if player.Team then
+		return player.Team.Name, player.Team.TeamColor.Color
+	end
+	return "No Team", Color3.fromRGB(90, 90, 100)
+end
+
+local function makeTeamHeader(teamName, teamColor, layoutOrder)
+	local header = Instance.new("Frame")
+	header.Size                  = UDim2.new(1, 0, 0, 18)
+	header.BackgroundColor3      = teamColor
+	header.BackgroundTransparency = 0.55
+	header.BorderSizePixel       = 0
+	header.LayoutOrder           = layoutOrder
+	header.Parent                = scrollFrame
+	Instance.new("UICorner", header).CornerRadius = UDim.new(0, 3)
+
+	local label = Instance.new("TextLabel")
+	label.Size                   = UDim2.new(1, -8, 1, 0)
+	label.Position               = UDim2.new(0, 6, 0, 0)
+	label.BackgroundTransparency = 1
+	label.TextColor3             = Color3.new(1,1,1)
+	label.TextSize               = 9
+	label.Font                   = Enum.Font.GothamBold
+	label.Text                   = teamName:upper()
+	label.TextXAlignment         = Enum.TextXAlignment.Left
+	label.Parent                 = header
+end
+
+local function makePlayerRow(target, layoutOrder)
+	local humanoid = target.Character and target.Character:FindFirstChild("Humanoid")
+	local isAlive  = humanoid and humanoid.Health > 0
+
+	local row = Instance.new("Frame")
+	row.Name             = "Row_" .. target.Name
+	row.Size             = UDim2.new(1, 0, 0, 32)
+	row.BackgroundColor3 = Color3.fromRGB(26, 26, 33)
+	row.BorderSizePixel  = 0
+	row.LayoutOrder      = layoutOrder
+	row.Parent           = scrollFrame
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 3)
+
+	-- Head thumbnail (loaded async so the list doesn't freeze)
+	local headIcon = Instance.new("ImageLabel")
+	headIcon.Size                   = UDim2.new(0, 26, 0, 26)
+	headIcon.Position               = UDim2.new(0, 3, 0.5, -13)
+	headIcon.BackgroundColor3       = Color3.fromRGB(40, 40, 50)
+	headIcon.BorderSizePixel        = 0
+	headIcon.Image                  = ""  -- filled async below
+	headIcon.ImageTransparency      = isAlive and 0 or 0.5
+	headIcon.Parent                 = row
+	Instance.new("UICorner", headIcon).CornerRadius = UDim.new(0, 3)
+
+	task.spawn(function()
+		-- GetUserThumbnailAsync yields; run in its own thread
+		local ok, thumb = pcall(function()
+			return players:GetUserThumbnailAsync(
+				target.UserId,
+				Enum.ThumbnailType.HeadShot,
+				Enum.ThumbnailSize.Size48x48
+			)
+		end)
+		if ok and headIcon.Parent then
+			headIcon.Image = thumb
+		end
+	end)
+
+	-- Username label
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size                   = UDim2.new(1, -100, 1, 0)
+	nameLabel.Position               = UDim2.new(0, 33, 0, 0)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text                   = target.Name
+	nameLabel.TextColor3             = isAlive
+		and Color3.fromRGB(210, 210, 210)
+		or  Color3.fromRGB(100, 100, 115)
+	nameLabel.TextSize               = 11
+	nameLabel.Font                   = Enum.Font.Gotham
+	nameLabel.TextXAlignment         = Enum.TextXAlignment.Left
+	nameLabel.TextTruncate           = Enum.TextTruncate.AtEnd
+	nameLabel.Parent                 = row
+
+	-- Kill / Scare button
+	if isAlive then
+		local killBtn = Instance.new("TextButton")
+		killBtn.Size             = UDim2.new(0, 54, 0, 22)
+		killBtn.Position         = UDim2.new(1, -58, 0.5, -11)
+		killBtn.BackgroundColor3 = Color3.fromRGB(155, 35, 35)
+		killBtn.Text             = scareMode and "Scare" or "Kill"
+		killBtn.TextColor3       = Color3.new(1,1,1)
+		killBtn.TextSize         = 10
+		killBtn.Font             = Enum.Font.GothamBold
+		killBtn.BorderSizePixel  = 0
+		killBtn.Parent           = row
+		Instance.new("UICorner", killBtn).CornerRadius = UDim.new(0, 3)
+
+		-- Keep label in sync if scare mode is toggled after list built
+		scareBtn.MouseButton1Click:Connect(function()
+			killBtn.Text             = scareMode and "Scare" or "Kill"
+			killBtn.BackgroundColor3 = scareMode
+				and Color3.fromRGB(50, 110, 50)
+				or  Color3.fromRGB(155, 35, 35)
+		end)
+
+		killBtn.MouseButton1Click:Connect(function()
+			killBtn.Active           = false
+			killBtn.Text             = "…"
+			killBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+			nameLabel.TextColor3     = Color3.fromRGB(130, 130, 140)
+			killPlayer(target)
+			task.delay(0.4, function()
+				-- Rebuild list so dead state updates
+				buildList(searchBox.Text)
+			end)
+		end)
+	else
+		-- Dead label
+		local deadLabel = Instance.new("TextLabel")
+		deadLabel.Size                   = UDim2.new(0, 54, 0, 22)
+		deadLabel.Position               = UDim2.new(1, -58, 0.5, -11)
+		deadLabel.BackgroundTransparency = 1
+		deadLabel.Text                   = "Dead"
+		deadLabel.TextColor3             = Color3.fromRGB(90, 90, 100)
+		deadLabel.TextSize               = 10
+		deadLabel.Font                   = Enum.Font.Gotham
+		deadLabel.TextXAlignment         = Enum.TextXAlignment.Center
+		deadLabel.Parent                 = row
+	end
+end
+
+-- Rebuild list, filtered by search query
+function buildList(query)
+	query = (query or ""):lower()
+
+	for _, child in ipairs(scrollFrame:GetChildren()) do
+		if child:IsA("Frame") then child:Destroy() end
+	end
+
+	-- Group by team, filtered by search
+	local groups = {}
+	local order  = {}
+
+	for _, player in ipairs(players:GetPlayers()) do
+		if player ~= lp then
+			-- Filter: show row only if name matches query (empty query = show all)
+			if query == "" or player.Name:lower():find(query, 1, true) then
+				local teamName, teamColor = getTeamLabel(player)
+				if not groups[teamName] then
+					groups[teamName] = { color = teamColor, members = {} }
+					table.insert(order, teamName)
+				end
+				table.insert(groups[teamName].members, player)
+			end
+		end
+	end
+
+	table.sort(order)
+
+	local layoutOrder = 0
+	for _, teamName in ipairs(order) do
+		local group = groups[teamName]
+		makeTeamHeader(teamName, group.color, layoutOrder)
+		layoutOrder += 1
+		table.sort(group.members, function(a, b) return a.Name < b.Name end)
+		for _, player in ipairs(group.members) do
+			makePlayerRow(player, layoutOrder)
+			layoutOrder += 1
+		end
+	end
+
+	if layoutOrder == 0 then
+		local empty = Instance.new("TextLabel")
+		empty.Size                   = UDim2.new(1, 0, 0, 30)
+		empty.BackgroundTransparency = 1
+		empty.TextColor3             = Color3.fromRGB(90, 90, 105)
+		empty.TextSize               = 11
+		empty.Font                   = Enum.Font.Gotham
+		empty.Text                   = query ~= "" and "No players match \"" .. query .. "\""
+			or "No other players in server"
+		empty.LayoutOrder            = 0
+		empty.Parent                 = scrollFrame
+	end
+end
+
+-- ── Wire up events ────────────────────────────────────────────────
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+	buildList(searchBox.Text)
+end)
+
+killAllBtn.MouseButton1Click:Connect(function()
+	killAllBtn.Active = false
+	killAllBtn.Text   = "Running…"
+
+	local targets = {}
+	for _, player in ipairs(players:GetPlayers()) do
+		if player ~= lp and player.Character then
+			local h = player.Character:FindFirstChild("Humanoid")
+			if h and h.Health > 0 then table.insert(targets, player) end
+		end
+	end
+	-- Shuffle
+	for i = #targets, 2, -1 do
+		local j = math.random(i)
+		targets[i], targets[j] = targets[j], targets[i]
+	end
+
+	task.spawn(function()
+		for _, target in ipairs(targets) do
+			killPlayer(target)
+			buildList(searchBox.Text)
+			task.wait(humanDelay())
+		end
+		print(("[DEMO] Done — fired at %d player(s)"):format(#targets))
+		killAllBtn.Text   = scareMode and "Scare All" or "Kill All  (burst)"
+		killAllBtn.Active = true
+	end)
+end)
+
+players.PlayerAdded:Connect(function()   task.wait(1)   buildList(searchBox.Text) end)
+players.PlayerRemoving:Connect(function() task.wait(0.1) buildList(searchBox.Text) end)
+
+buildList("")
+
+print("[DEMO] Kill GUI v2 ready. Mouse unlocked. Use search or click Kill/Scare per player.")
+print("[DEMO] Patch: ammoCountCheck=true, per-player fire-rate limit, tighten multiKillThreshold.")
