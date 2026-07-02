@@ -1,0 +1,439 @@
+-- VehicleSpawnerGui (LocalScript)
+-- Place in: StarterGui > ScreenGui > LocalScript
+-- Requires in ReplicatedStorage:
+--   VehicleStorage  (Folder of vehicle Models)
+--   VehicleSpawn    (RemoteFunction — created by VehicleSpawnServer)
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+
+local LocalPlayer    = Players.LocalPlayer
+local VehicleStorage = ReplicatedStorage:WaitForChild("VehicleStorage")
+local VehicleSpawn   = ReplicatedStorage:WaitForChild("VehicleSpawn")
+
+-- ── Spawn config (edited by sliders) ─────────────────────────────
+local cfg = {
+	spawnDistance  = 20,
+	heightOffset   = 0,
+	sizeMultiplier = 1.0,
+}
+
+-- ── State ─────────────────────────────────────────────────────────
+local selectedVehicle = nil
+local selectedBtn     = nil
+local previewConn     = nil
+local spawning        = false
+
+-- ══════════════════════════════════════════════════════════════════
+--  GUI CONSTRUCTION
+-- ══════════════════════════════════════════════════════════════════
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name          = "VehicleSpawnerGui"
+screenGui.ResetOnSpawn  = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent        = LocalPlayer.PlayerGui
+
+-- Main frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Name             = "MainFrame"
+mainFrame.Size             = UDim2.new(0, 710, 0, 450)
+mainFrame.Position         = UDim2.new(0.5, -355, 0.5, -225)
+mainFrame.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+mainFrame.BorderSizePixel  = 0
+mainFrame.Active           = true
+mainFrame.Draggable        = true
+mainFrame.Parent           = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 8)
+
+-- Title bar
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 34)
+titleBar.BackgroundColor3 = Color3.fromRGB(26, 26, 36)
+titleBar.BorderSizePixel  = 0
+titleBar.Parent           = mainFrame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size               = UDim2.new(1, -42, 1, 0)
+titleLabel.Position           = UDim2.new(0, 12, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text               = "Vehicle Spawner"
+titleLabel.TextColor3         = Color3.fromRGB(220, 220, 240)
+titleLabel.TextSize           = 14
+titleLabel.Font               = Enum.Font.GothamBold
+titleLabel.TextXAlignment     = Enum.TextXAlignment.Left
+titleLabel.Parent             = titleBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size             = UDim2.new(0, 26, 0, 26)
+closeBtn.Position         = UDim2.new(1, -30, 0, 4)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 45, 45)
+closeBtn.Text             = "✕"
+closeBtn.TextColor3       = Color3.new(1, 1, 1)
+closeBtn.TextSize         = 11
+closeBtn.Font             = Enum.Font.GothamBold
+closeBtn.BorderSizePixel  = 0
+closeBtn.Parent           = titleBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
+closeBtn.MouseButton1Click:Connect(function()
+	if previewConn then previewConn:Disconnect() end
+	screenGui:Destroy()
+end)
+
+-- ── Left panel: vehicle list ───────────────────────────────────────
+local listPanel = Instance.new("Frame")
+listPanel.Size             = UDim2.new(0, 158, 1, -42)
+listPanel.Position         = UDim2.new(0, 8, 0, 38)
+listPanel.BackgroundColor3 = Color3.fromRGB(11, 11, 16)
+listPanel.BorderSizePixel  = 0
+listPanel.Parent           = mainFrame
+Instance.new("UICorner", listPanel).CornerRadius = UDim.new(0, 6)
+
+local scrollFrame = Instance.new("ScrollingFrame")
+scrollFrame.Size                 = UDim2.new(1, -4, 1, -4)
+scrollFrame.Position             = UDim2.new(0, 2, 0, 2)
+scrollFrame.BackgroundTransparency = 1
+scrollFrame.BorderSizePixel      = 0
+scrollFrame.ScrollBarThickness   = 3
+scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(70, 70, 100)
+scrollFrame.CanvasSize           = UDim2.new(0, 0, 0, 0)
+scrollFrame.AutomaticCanvasSize  = Enum.AutomaticSize.Y
+scrollFrame.Parent               = listPanel
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.Name
+listLayout.Padding   = UDim.new(0, 3)
+listLayout.Parent    = scrollFrame
+
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop   = UDim.new(0, 4)
+listPadding.PaddingLeft  = UDim.new(0, 4)
+listPadding.PaddingRight = UDim.new(0, 4)
+listPadding.Parent       = scrollFrame
+
+-- ── Center: viewport frame ─────────────────────────────────────────
+local viewportFrame = Instance.new("ViewportFrame")
+viewportFrame.Size             = UDim2.new(0, 278, 0, 310)
+viewportFrame.Position         = UDim2.new(0, 174, 0, 38)
+viewportFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 15)
+viewportFrame.BorderSizePixel  = 0
+viewportFrame.Ambient          = Color3.fromRGB(90, 90, 120)
+viewportFrame.LightColor       = Color3.fromRGB(210, 210, 230)
+viewportFrame.LightDirection   = Vector3.new(-1, -2, -1)
+viewportFrame.Parent           = mainFrame
+Instance.new("UICorner", viewportFrame).CornerRadius = UDim.new(0, 6)
+
+local noPreviewLabel = Instance.new("TextLabel")
+noPreviewLabel.Size               = UDim2.new(1, 0, 1, 0)
+noPreviewLabel.BackgroundTransparency = 1
+noPreviewLabel.Text               = "Select a vehicle"
+noPreviewLabel.TextColor3         = Color3.fromRGB(70, 70, 90)
+noPreviewLabel.TextSize           = 13
+noPreviewLabel.Font               = Enum.Font.Gotham
+noPreviewLabel.Parent             = viewportFrame
+
+-- Vehicle name label (below viewport)
+local vicNameLabel = Instance.new("TextLabel")
+vicNameLabel.Size             = UDim2.new(0, 278, 0, 26)
+vicNameLabel.Position         = UDim2.new(0, 174, 0, 354)
+vicNameLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+vicNameLabel.BorderSizePixel  = 0
+vicNameLabel.Text             = ""
+vicNameLabel.TextColor3       = Color3.fromRGB(200, 200, 230)
+vicNameLabel.TextSize         = 12
+vicNameLabel.Font             = Enum.Font.GothamBold
+vicNameLabel.Parent           = mainFrame
+Instance.new("UICorner", vicNameLabel).CornerRadius = UDim.new(0, 4)
+
+-- Spawn button (below name label)
+local spawnBtn = Instance.new("TextButton")
+spawnBtn.Size             = UDim2.new(0, 278, 0, 38)
+spawnBtn.Position         = UDim2.new(0, 174, 0, 386)
+spawnBtn.BackgroundColor3 = Color3.fromRGB(55, 115, 215)
+spawnBtn.Text             = "SPAWN"
+spawnBtn.TextColor3       = Color3.new(1, 1, 1)
+spawnBtn.TextSize         = 14
+spawnBtn.Font             = Enum.Font.GothamBold
+spawnBtn.BorderSizePixel  = 0
+spawnBtn.Parent           = mainFrame
+Instance.new("UICorner", spawnBtn).CornerRadius = UDim.new(0, 6)
+
+-- ── Right panel: config sliders ────────────────────────────────────
+local configPanel = Instance.new("Frame")
+configPanel.Size             = UDim2.new(0, 234, 1, -42)
+configPanel.Position         = UDim2.new(1, -242, 0, 38)
+configPanel.BackgroundColor3 = Color3.fromRGB(11, 11, 16)
+configPanel.BorderSizePixel  = 0
+configPanel.Parent           = mainFrame
+Instance.new("UICorner", configPanel).CornerRadius = UDim.new(0, 6)
+
+local configListLayout = Instance.new("UIListLayout")
+configListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+configListLayout.Padding   = UDim.new(0, 6)
+configListLayout.Parent    = configPanel
+
+local configPadding = Instance.new("UIPadding")
+configPadding.PaddingTop   = UDim.new(0, 8)
+configPadding.PaddingLeft  = UDim.new(0, 8)
+configPadding.PaddingRight = UDim.new(0, 8)
+configPadding.Parent       = configPanel
+
+-- Section header
+local configHeader = Instance.new("TextLabel")
+configHeader.Size               = UDim2.new(1, 0, 0, 20)
+configHeader.BackgroundTransparency = 1
+configHeader.Text               = "SPAWN CONFIG"
+configHeader.TextColor3         = Color3.fromRGB(100, 120, 180)
+configHeader.TextSize           = 10
+configHeader.Font               = Enum.Font.GothamBold
+configHeader.LayoutOrder        = 0
+configHeader.Parent             = configPanel
+
+-- ── Slider builder ────────────────────────────────────────────────
+local function makeSlider(labelText, layoutOrder, minVal, maxVal, defaultVal, step, onChanged)
+	local row = Instance.new("Frame")
+	row.Size             = UDim2.new(1, 0, 0, 58)
+	row.BackgroundColor3 = Color3.fromRGB(19, 19, 27)
+	row.BorderSizePixel  = 0
+	row.LayoutOrder      = layoutOrder
+	row.Parent           = configPanel
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+
+	local rowPad = Instance.new("UIPadding")
+	rowPad.PaddingLeft  = UDim.new(0, 8)
+	rowPad.PaddingRight = UDim.new(0, 8)
+	rowPad.Parent       = row
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size               = UDim2.new(0.65, 0, 0, 20)
+	nameLabel.Position           = UDim2.new(0, 0, 0, 8)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text               = labelText
+	nameLabel.TextColor3         = Color3.fromRGB(160, 160, 195)
+	nameLabel.TextSize           = 11
+	nameLabel.Font               = Enum.Font.Gotham
+	nameLabel.TextXAlignment     = Enum.TextXAlignment.Left
+	nameLabel.Parent             = row
+
+	local valLabel = Instance.new("TextLabel")
+	valLabel.Size               = UDim2.new(0.35, 0, 0, 20)
+	valLabel.Position           = UDim2.new(0.65, 0, 0, 8)
+	valLabel.BackgroundTransparency = 1
+	valLabel.Text               = step < 1 and string.format("%.1f", defaultVal) or tostring(defaultVal)
+	valLabel.TextColor3         = Color3.fromRGB(120, 190, 255)
+	valLabel.TextSize           = 11
+	valLabel.Font               = Enum.Font.GothamBold
+	valLabel.TextXAlignment     = Enum.TextXAlignment.Right
+	valLabel.Parent             = row
+
+	local trackBg = Instance.new("Frame")
+	trackBg.Size             = UDim2.new(1, 0, 0, 6)
+	trackBg.Position         = UDim2.new(0, 0, 0, 38)
+	trackBg.BackgroundColor3 = Color3.fromRGB(32, 32, 46)
+	trackBg.BorderSizePixel  = 0
+	trackBg.Parent           = row
+	Instance.new("UICorner", trackBg).CornerRadius = UDim.new(1, 0)
+
+	local t0 = (defaultVal - minVal) / (maxVal - minVal)
+
+	local trackFill = Instance.new("Frame")
+	trackFill.Size             = UDim2.new(t0, 0, 1, 0)
+	trackFill.BackgroundColor3 = Color3.fromRGB(90, 145, 255)
+	trackFill.BorderSizePixel  = 0
+	trackFill.Parent           = trackBg
+	Instance.new("UICorner", trackFill).CornerRadius = UDim.new(1, 0)
+
+	local thumb = Instance.new("Frame")
+	thumb.Size        = UDim2.new(0, 14, 0, 14)
+	thumb.AnchorPoint = Vector2.new(0.5, 0.5)
+	thumb.Position    = UDim2.new(t0, 0, 0.5, 0)
+	thumb.BackgroundColor3 = Color3.fromRGB(175, 205, 255)
+	thumb.BorderSizePixel  = 0
+	thumb.Parent      = trackBg
+	Instance.new("UICorner", thumb).CornerRadius = UDim.new(1, 0)
+
+	local dragging = false
+
+	local function applyX(absX)
+		local t = math.clamp((absX - trackBg.AbsolutePosition.X) / trackBg.AbsoluteSize.X, 0, 1)
+		local raw = minVal + t * (maxVal - minVal)
+		local val = math.clamp(math.floor(raw / step + 0.5) * step, minVal, maxVal)
+		local displayT = (val - minVal) / (maxVal - minVal)
+		trackFill.Size    = UDim2.new(displayT, 0, 1, 0)
+		thumb.Position    = UDim2.new(displayT, 0, 0.5, 0)
+		valLabel.Text     = step < 1 and string.format("%.1f", val) or tostring(val)
+		onChanged(val)
+	end
+
+	trackBg.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			applyX(input.Position.X)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			applyX(input.Position.X)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+end
+
+makeSlider("Spawn Distance (studs)", 1, 5,   60,  cfg.spawnDistance,  1,   function(v) cfg.spawnDistance  = v   end)
+makeSlider("Height Offset (studs)",  2, -5,  15,  cfg.heightOffset,   1,   function(v) cfg.heightOffset   = v   end)
+makeSlider("Size Multiplier",        3, 0.5, 3.0, cfg.sizeMultiplier, 0.1, function(v) cfg.sizeMultiplier = v   end)
+
+-- ══════════════════════════════════════════════════════════════════
+--  VIEWPORT CAMERA
+-- ══════════════════════════════════════════════════════════════════
+local rotAngle = 0
+
+local function setupPreview(model)
+	if previewConn then
+		previewConn:Disconnect()
+		previewConn = nil
+	end
+
+	for _, child in ipairs(viewportFrame:GetChildren()) do
+		if child:IsA("Camera") or child:IsA("Model") then
+			child:Destroy()
+		end
+	end
+
+	if not model then
+		noPreviewLabel.Visible = true
+		return
+	end
+
+	noPreviewLabel.Visible = false
+
+	local clone = model:Clone()
+	clone.Parent = viewportFrame
+
+	local cam = Instance.new("Camera")
+	cam.Parent = viewportFrame
+	viewportFrame.CurrentCamera = cam
+
+	local cf, size = clone:GetBoundingBox()
+	local maxDim   = math.max(size.X, size.Y, size.Z)
+	local dist     = maxDim * 1.7
+	rotAngle       = 0
+
+	previewConn = RunService.RenderStepped:Connect(function(dt)
+		rotAngle = rotAngle + dt * 20
+		local rot    = CFrame.Angles(0, math.rad(rotAngle), 0)
+		local pivot  = CFrame.new(cf.Position) * rot
+		local camCF  = pivot:ToWorldSpace(CFrame.new(0, maxDim * 0.28, dist))
+		cam.CFrame   = CFrame.new(camCF.Position, cf.Position)
+	end)
+end
+
+-- ══════════════════════════════════════════════════════════════════
+--  VEHICLE LIST
+-- ══════════════════════════════════════════════════════════════════
+local function selectVehicle(model, btn)
+	selectedVehicle = model
+	vicNameLabel.Text = model.Name
+	setupPreview(model)
+
+	if selectedBtn then
+		selectedBtn.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
+	end
+	selectedBtn = btn
+	btn.BackgroundColor3 = Color3.fromRGB(40, 65, 140)
+end
+
+local function buildList()
+	local vehicles = {}
+
+	for _, child in ipairs(VehicleStorage:GetChildren()) do
+		if child:IsA("Model") then
+			table.insert(vehicles, child)
+		end
+	end
+
+	table.sort(vehicles, function(a, b) return a.Name < b.Name end)
+
+	for _, model in ipairs(vehicles) do
+		local btn = Instance.new("TextButton")
+		btn.Size             = UDim2.new(1, 0, 0, 36)
+		btn.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
+		btn.BorderSizePixel  = 0
+		btn.Text             = model.Name
+		btn.TextColor3       = Color3.fromRGB(195, 195, 220)
+		btn.TextSize         = 11
+		btn.Font             = Enum.Font.Gotham
+		btn.TextTruncate     = Enum.TextTruncate.AtEnd
+		btn.Parent           = scrollFrame
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+
+		local btnPad = Instance.new("UIPadding")
+		btnPad.PaddingLeft = UDim.new(0, 8)
+		btnPad.Parent      = btn
+
+		btn.MouseButton1Click:Connect(function()
+			selectVehicle(model, btn)
+		end)
+
+		if selectedVehicle == nil then
+			selectVehicle(model, btn)
+		end
+	end
+
+	if #vehicles == 0 then
+		local emptyLabel = Instance.new("TextLabel")
+		emptyLabel.Size               = UDim2.new(1, 0, 0, 36)
+		emptyLabel.BackgroundTransparency = 1
+		emptyLabel.Text               = "No vehicles found"
+		emptyLabel.TextColor3         = Color3.fromRGB(70, 70, 90)
+		emptyLabel.TextSize           = 11
+		emptyLabel.Font               = Enum.Font.Gotham
+		emptyLabel.Parent             = scrollFrame
+	end
+end
+
+buildList()
+
+-- ══════════════════════════════════════════════════════════════════
+--  SPAWN
+-- ══════════════════════════════════════════════════════════════════
+spawnBtn.MouseButton1Click:Connect(function()
+	if spawning or not selectedVehicle then return end
+
+	local char = LocalPlayer.Character
+	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+
+	spawning = true
+	spawnBtn.Text             = "SPAWNING..."
+	spawnBtn.BackgroundColor3 = Color3.fromRGB(35, 75, 150)
+
+	local root       = char.HumanoidRootPart
+	local spawnCFrame = root.CFrame
+		* CFrame.new(0, cfg.heightOffset, -cfg.spawnDistance)
+
+	local ok = VehicleSpawn:InvokeServer("Spawn", selectedVehicle, {
+		Position       = spawnCFrame,
+		SizeMultiplier = cfg.sizeMultiplier,
+	})
+
+	if ok then
+		spawnBtn.Text             = "SPAWNED!"
+		spawnBtn.BackgroundColor3 = Color3.fromRGB(38, 155, 75)
+	else
+		spawnBtn.Text             = "FAILED"
+		spawnBtn.BackgroundColor3 = Color3.fromRGB(155, 38, 38)
+	end
+
+	task.wait(1.5)
+	spawnBtn.Text             = "SPAWN"
+	spawnBtn.BackgroundColor3 = Color3.fromRGB(55, 115, 215)
+	spawning = false
+end)
