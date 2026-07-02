@@ -1,0 +1,218 @@
+-- https://lua.expert/
+local Players = game:GetService("Players")
+
+game:GetService("CollectionService")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+local INTERACT_Assets = ReplicatedStorage.INTERACT_Assets
+local SpawnLimits = require(INTERACT_Assets.Modules.VehicleSpawner.SpawnLimits)
+local VehicleSpawn = INTERACT_Assets.Events.VehicleSpawn
+local VehicleStorage = INTERACT_Assets.VehicleStorage
+local Vehicles = game.Workspace.Vehicles
+local v1 = script.Parent
+local v2 = nil
+local v3 = nil
+local v4 = nil
+local v5 = nil
+local v6 = nil
+local v7 = false
+
+local function CameraSetup() --[[ CameraSetup | Line: 41 | Upvalues: v3 (ref), v6 (ref), TweenService (copy), v2 (ref), RunService (copy) ]]
+	local v1 = v3
+
+	v1.CameraType = Enum.CameraType.Scriptable
+
+	local v22 = Instance.new("NumberValue")
+	local v32 = false
+
+	local function updateCamera() --[[ updateCamera | Line: 48 | Upvalues: v6 (ref), v3 (ref), v22 (copy), v1 (copy) ]]
+		if v6 and v3 then
+			local v12 = v6:GetPivot()
+			local v32 = CFrame.Angles(0, math.rad(v22.Value), 0)
+			local v4 = CFrame.new(v12.Position) * v32
+
+			v1.Focus = v12
+			v1.CFrame = v4:ToWorldSpace(CFrame.new(Vector3.new(0, 6, 25)))
+			v1.CFrame = CFrame.new(v1.CFrame.Position, v12.Position)
+		end
+	end
+
+	local v4 = TweenService:Create(v22, TweenInfo.new(20, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {
+		Value = 360
+	})
+
+	v4.Completed:Connect(function() --[[ Line: 61 | Upvalues: v32 (ref) ]]
+		v32 = true
+	end)
+	v4:Play()
+	v2 = RunService.RenderStepped:Connect(function() --[[ Line: 67 | Upvalues: v32 (ref), updateCamera (copy) ]]
+		if v32 ~= false then
+			return
+		end
+
+		updateCamera()
+	end)
+end
+
+function ViewportSetup(p1, p2) --[[ ViewportSetup | Line: 74 | Upvalues: v6 (ref), v3 (ref), v2 (ref), CameraSetup (copy) ]]
+	local PreviewVic = p1:FindFirstChild("PreviewVic")
+
+	if PreviewVic then
+		PreviewVic:Destroy()
+	end
+
+	if not p2 then
+		return
+	end
+
+	local PreviewVic2 = p2:Clone()
+
+	PreviewVic2.Name = "PreviewVic"
+	PreviewVic2.Parent = p1
+
+	local PreviewCam = p1:FindFirstChild("PreviewCam")
+	local v1
+
+	if PreviewCam then
+		p1.CurrentCamera = PreviewCam
+		v1 = PreviewCam
+	else
+		local PreviewCam2 = Instance.new("Camera")
+
+		p1.CurrentCamera = PreviewCam2
+		PreviewCam2.Name = "PreviewCam"
+		PreviewCam2.Parent = p1
+		v1 = PreviewCam2
+	end
+
+	if v6 or v3 then
+		v6 = PreviewVic2
+		v3 = v1
+
+		return
+	end
+
+	v6 = PreviewVic2
+	v3 = v1
+
+	if v2 then
+		v2:Disconnect()
+	end
+
+	CameraSetup(v1)
+end
+
+local function LoadVic(p1, p2) --[[ LoadVic | Line: 108 | Upvalues: VehicleSpawn (copy), v1 (copy) ]]
+	local v12 = VehicleSpawn:InvokeServer("Count", p1)
+
+	v1.Frame.VicInfo.Info_Slots.Text = p2.SpawnLimit ~= nil and v12[2] - v12[1] .. "/" .. v12[2] .. " vehicles left." or ""
+	v1.Frame.VicInfo.Info_Slots.Visible = if v12[2] == nil then false else true
+	v1.Frame.VicInfo.Info_Name.Text = p2.DisplayName or p1
+	v1.Frame.VicInfo.Info_Description.Text = p2.Description or ""
+end
+
+local function SelectEntry(p1) --[[ SelectEntry | Line: 117 | Upvalues: SpawnLimits (copy), VehicleStorage (copy), v4 (ref), v5 (ref), LoadVic (copy), v1 (copy) ]]
+	local v12 = SpawnLimits.Info[p1]
+	local v2 = VehicleStorage:FindFirstChild(p1)
+
+	if not v12 then
+		warn("VehicleSpawner_Local: " .. p1 .. " has no entry in the module settings!")
+
+		return
+	end
+
+	if v2 then
+		v4 = v2
+		v5 = v12
+		LoadVic(p1, v12)
+		ViewportSetup(v1.Frame.VicInfo.Preview.ViewportFrame, v2)
+	else
+		warn("VehicleSpawner_Local: " .. p1 .. " has no sample vehicle!")
+	end
+end
+
+(function(p1, p2, p3, p4) --[[ SetupUI | Line: 129 | Upvalues: v1 (copy), v7 (ref), VehicleSpawn (copy), SpawnLimits (copy), VehicleStorage (copy), v4 (ref), v5 (ref), LoadVic (copy), SelectEntry (copy) ]]
+	v1.Frame.Button_Exit.Activated:Connect(function() --[[ Line: 131 | Upvalues: v7 (ref), VehicleSpawn (ref), v1 (ref) ]]
+		v7 = true
+		VehicleSpawn:InvokeServer("Exit", v1)
+	end)
+
+	for v12, v2 in p1.VehicleList do
+		local v3 = SpawnLimits.Info[v2]
+		local v42 = VehicleStorage:FindFirstChild(v2)
+
+		if v3 then
+			if v42 then
+				local v52 = v1.Frame.VicList.ScrollingFrame.UIListLayout.Example:Clone()
+
+				v52.Parent = v1.Frame.VicList.ScrollingFrame
+				v52.Name = v2
+				v52.VehicleName.Text = v3.ShortName or v2
+				v52.VehicleImg.Image = "rbxassetid://" .. (v3.ImageID or 12338080417)
+				v52.Button_Load.Activated:Connect(function() --[[ Line: 148 | Upvalues: v7 (ref), v4 (ref), v42 (copy), v5 (ref), v3 (copy), LoadVic (ref), v2 (copy), v1 (ref) ]]
+					if not v7 then
+						v4 = v42
+						v5 = v3
+						LoadVic(v2, v3)
+						ViewportSetup(v1.Frame.VicInfo.Preview.ViewportFrame, v42)
+					end
+				end)
+
+				continue
+			end
+
+			warn("VehicleSpawner_Local: " .. v2 .. " has no sample vehicle!")
+
+			continue
+		end
+
+		warn("VehicleSpawner_Local: " .. v2 .. " has no entry in the module settings!")
+	end
+
+	SelectEntry(p1.VehicleList[1])
+	v1.Frame.VicInfo.Button_Spawn.UIStroke.Color = Color3.new(0.698039, 0.768627, 1)
+	v1.Frame.VicInfo.Button_Spawn.Activated:Connect(function() --[[ Line: 161 | Upvalues: v7 (ref), v4 (ref), v5 (ref), VehicleSpawn (ref), v1 (ref), p2 (copy), p3 (copy), p4 (copy) ]]
+		if v7 or not (v4 and v5) then
+			return
+		end
+
+		local v12 = VehicleSpawn:InvokeServer("Count", v4.Name)
+
+		v1.Frame.VicInfo.Info_Slots.Text = v5.SpawnLimit ~= nil and v12[2] - v12[1] .. "/" .. v12[2] .. " vehicles left." or ""
+		v1.Frame.VicInfo.Info_Slots.Visible = v12[2] ~= nil
+
+		if VehicleSpawn:InvokeServer("Spawn", v4, {
+			Position = p2,
+			Size = p3,
+			Object = p4
+		}) then
+			v7 = true
+			v1.Success:Play()
+			VehicleSpawn:InvokeServer("Exit", v1)
+
+			return
+		end
+
+		v7 = true
+		v1.Error:Play()
+
+		local RespawnTimer = v4:FindFirstChild("RespawnTimer")
+
+		if RespawnTimer then
+			local v42 = RespawnTimer:GetAttribute("Duration")
+
+			v1.Frame.VicInfo.Button_Spawn.Text = "WAIT " .. v42 - math.ceil(os.clock() - RespawnTimer.Value) .. "s"
+		else
+			v1.Frame.VicInfo.Button_Spawn.Text = "CAN\'T SPAWN"
+		end
+
+		v1.Frame.VicInfo.Button_Spawn.UIStroke.Color = Color3.new(1, 0.407843, 0.290196)
+		task.wait(1)
+		v1.Frame.VicInfo.Button_Spawn.Text = "SPAWN"
+		v1.Frame.VicInfo.Button_Spawn.UIStroke.Color = Color3.new(0.698039, 0.768627, 1)
+		v7 = false
+	end)
+end)(require(script.SpawnerSettings.Value), script.SpawnPos.Value, script.SpawnSize.Value, script.Spawner.Value)
